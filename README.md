@@ -143,16 +143,21 @@ Every `git` command the server executes inherits that user's environment, which 
 
 ### On multi-user machines
 
-Each user must install and run their own instance. There is no shared daemon or system-wide service.
+Each user must install and run their own instance. There is no shared daemon or system-wide service. **An AI agent running as user B cannot reach or use a server instance started by user A** — this is enforced by how stdio transport works and how the OS isolates per-user services.
 
-- **macOS LaunchAgent** (`~/Library/LaunchAgents/`): A LaunchAgent is a *per-user* service — it runs in your login session with your UID, your home directory, and your keychain. Other users on the same machine cannot see or interact with your agent.
-- **Linux systemd user unit** (`~/.config/systemd/user/`): A systemd `--user` service runs in your user session. It has access to your files, your SSH agent socket, and your credential helpers. Other users have their own systemd user instance.
+Here's why: this server uses **stdio transport**, not a network socket. There is no port, no Unix socket, and no IPC endpoint that other users could connect to. The MCP client (e.g. Claude Code) launches the server as a child process and communicates over the child's stdin/stdout pipe. That pipe is private to the parent process — no other user or process on the machine can attach to it.
+
+The system services reinforce this:
+
+- **macOS LaunchAgent** (`~/Library/LaunchAgents/`): Runs in your login session with your UID, your home directory, and your keychain. launchd scopes it to your user session — other users cannot see, interact with, or send input to your agent.
+- **Linux systemd user unit** (`~/.config/systemd/user/`): Runs in your user session under your UID. systemd user instances are entirely separate per user — other users have their own instance and cannot access yours.
 
 In both cases, the server process can only access repositories that the installing user has filesystem permissions to read/write. Combined with the `.git-mcp-allowed` sentinel requirement, this means:
 
-1. The server only operates on repos the user has filesystem access to
-2. Among those, it only operates on repos that have explicitly opted in
-3. Git operations authenticate using that user's existing credential setup
+1. Only the installing user's MCP client can talk to their server instance (stdio pipe isolation)
+2. The server only operates on repos that user has filesystem access to
+3. Among those, it only operates on repos that have explicitly opted in via sentinel file
+4. Git operations authenticate using that user's existing credential setup — SSH keys, Keychain, credential helpers, etc.
 
 **No credentials are stored, managed, or proxied by the server.** If `git push` or `git pull` encounters an authentication error, the error is returned as-is from git. The server sets `GIT_TERMINAL_PROMPT=0` implicitly (via non-interactive subprocess execution), so credential prompts that require a TTY will fail with a clear error rather than hanging.
 
