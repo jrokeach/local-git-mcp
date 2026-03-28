@@ -25,12 +25,55 @@ Running git operations through a local MCP server — which executes with full h
 
 ## Installation
 
-```bash
-# Using uv
-uv pip install .
+### Quick install (recommended)
 
-# Or using pip
-pip install .
+The install script clones the repo, creates an isolated virtual environment, and registers a system service by default:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install.sh | bash
+```
+
+To install **without** registering a system service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install.sh | bash -s -- --no-service
+```
+
+**What the installer does:**
+
+1. Finds a Python 3.11+ interpreter on your system
+2. Clones this repo to `~/.local/share/local-git-mcp` (override with `LOCAL_GIT_MCP_DIR`)
+3. Creates a virtual environment and installs the package
+4. Unless `--no-service` is passed:
+   - **macOS**: Installs a LaunchAgent (`com.local-git-mcp`) that starts at login
+   - **Linux**: Installs a systemd user service (`local-git-mcp.service`) that starts at login
+
+The installer prints the full binary path and a ready-to-paste MCP client config snippet when finished.
+
+### Manual install
+
+```bash
+git clone https://github.com/jrokeach/local-git-mcp.git
+cd local-git-mcp
+pip install .        # or: uv pip install .
+```
+
+## Uninstallation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/uninstall.sh | bash
+```
+
+This will:
+1. Stop and remove the system service (LaunchAgent on macOS, systemd unit on Linux)
+2. Delete the installation directory (`~/.local/share/local-git-mcp`)
+
+The uninstaller does **not** remove `.git-mcp-allowed` sentinel files from your repositories or MCP client config entries — those must be cleaned up manually.
+
+If you used a custom install path, set the same environment variable:
+
+```bash
+curl -fsSL ... | LOCAL_GIT_MCP_DIR=/your/custom/path bash
 ```
 
 ## Per-Repository Access Control
@@ -68,13 +111,13 @@ Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.
 }
 ```
 
-If you installed with `uv` and the command isn't on your PATH, use the full path:
+If the command isn't on your PATH (e.g. you used the installer), use the full path printed at the end of installation:
 
 ```json
 {
   "mcpServers": {
     "local-git-mcp": {
-      "command": "/path/to/your/venv/bin/local-git-mcp",
+      "command": "/path/to/your/.local/share/local-git-mcp/.venv/bin/local-git-mcp",
       "args": [],
       "type": "stdio"
     }
@@ -88,44 +131,30 @@ Any MCP client that supports stdio transport can use this server. Point it at th
 
 ## Credentials and Authentication
 
-The server inherits whatever credential setup the host OS has — SSH keys, macOS Keychain, git credential helpers, etc. No authentication is handled by the server itself. This means the server works with whatever you already have configured, and credential management stays entirely out of scope.
+The server **runs as the user who starts it** — whether that's you running it directly, an MCP client spawning it, or a system service started at login. It has no elevated privileges and no credential store of its own.
 
-If `git_push` or `git_pull` encounters an authentication issue, the error will be returned as-is from git rather than hanging on an interactive prompt.
+Every `git` command the server executes inherits that user's environment, which means it uses:
 
-## macOS LaunchAgent (Optional)
+- **SSH keys** from `~/.ssh/` (for `git@` remotes)
+- **Git credential helpers** configured in `~/.gitconfig` or `/etc/gitconfig` — e.g. `osxkeychain` on macOS, `libsecret` or `credential-cache` on Linux
+- **macOS Keychain** entries (if the user's credential helper is `osxkeychain`)
+- **Environment variables** like `GIT_SSH_COMMAND`, `GIT_ASKPASS`, or `SSH_AUTH_SOCK`
+- **Git config** from `~/.gitconfig` (user-level) and any repo-level `.git/config`
 
-To keep the server available as a system service, create a LaunchAgent plist at `~/Library/LaunchAgents/com.local-git-mcp.plist`:
+### On multi-user machines
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.local-git-mcp</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/path/to/your/venv/bin/local-git-mcp</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/local-git-mcp.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/local-git-mcp.stderr.log</string>
-</dict>
-</plist>
-```
+Each user must install and run their own instance. There is no shared daemon or system-wide service.
 
-Load it with:
+- **macOS LaunchAgent** (`~/Library/LaunchAgents/`): A LaunchAgent is a *per-user* service — it runs in your login session with your UID, your home directory, and your keychain. Other users on the same machine cannot see or interact with your agent.
+- **Linux systemd user unit** (`~/.config/systemd/user/`): A systemd `--user` service runs in your user session. It has access to your files, your SSH agent socket, and your credential helpers. Other users have their own systemd user instance.
 
-```bash
-launchctl load ~/Library/LaunchAgents/com.local-git-mcp.plist
-```
+In both cases, the server process can only access repositories that the installing user has filesystem permissions to read/write. Combined with the `.git-mcp-allowed` sentinel requirement, this means:
 
-> **Note:** A LaunchAgent is typically unnecessary since MCP clients spawn the server on demand via stdio. This is only useful if your setup benefits from a persistent background process.
+1. The server only operates on repos the user has filesystem access to
+2. Among those, it only operates on repos that have explicitly opted in
+3. Git operations authenticate using that user's existing credential setup
+
+**No credentials are stored, managed, or proxied by the server.** If `git push` or `git pull` encounters an authentication error, the error is returned as-is from git. The server sets `GIT_TERMINAL_PROMPT=0` implicitly (via non-interactive subprocess execution), so credential prompts that require a TTY will fail with a clear error rather than hanging.
 
 ## Security Model
 
@@ -135,6 +164,7 @@ launchctl load ~/Library/LaunchAgents/com.local-git-mcp.plist
 - **No hardcoded paths**: All repository paths are passed as parameters at call time.
 - **Lock file cleanup**: `git_commit` automatically cleans up stale `.lock` files in `.git/` before and after operations, solving the sandbox permission issue.
 - **No credentials stored**: The server delegates all authentication to the host OS's existing git credential configuration.
+- **Per-user isolation**: Each user runs their own instance with their own credentials. No shared state between users.
 
 ## License
 
