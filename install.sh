@@ -98,6 +98,9 @@ PLIST
 
   launchctl bootstrap "gui/$(id -u)" "$plist_path"
   info "LaunchAgent installed and started"
+  if [ "$IS_UPGRADE" = true ]; then
+    info "Upgrade detected — service restarted with new version"
+  fi
 }
 
 install_linux_service() {
@@ -124,7 +127,8 @@ WantedBy=default.target
 UNIT
 
   systemctl --user daemon-reload
-  systemctl --user enable --now local-git-mcp.service
+  systemctl --user enable local-git-mcp.service
+  systemctl --user restart local-git-mcp.service
   info "systemd user service installed and started"
 }
 
@@ -148,7 +152,9 @@ info "Using Python: $PYTHON ($($PYTHON --version 2>&1))"
 # ---------------------------------------------------------------------------
 # Install the package
 # ---------------------------------------------------------------------------
+IS_UPGRADE=false
 if [ -d "$INSTALL_DIR/.git" ]; then
+  IS_UPGRADE=true
   info "Updating existing installation in $INSTALL_DIR"
   git -C "$INSTALL_DIR" pull --ff-only
 else
@@ -162,7 +168,7 @@ info "Creating virtual environment"
 
 info "Installing local-git-mcp"
 "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null 2>&1
-"$VENV_DIR/bin/pip" install "$INSTALL_DIR" >/dev/null 2>&1
+"$VENV_DIR/bin/pip" install --force-reinstall "$INSTALL_DIR" >/dev/null 2>&1
 
 BIN_PATH="$VENV_DIR/bin/local-git-mcp"
 if [ ! -f "$BIN_PATH" ]; then
