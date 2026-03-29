@@ -146,6 +146,7 @@ esac
 # Pre-flight checks
 # ---------------------------------------------------------------------------
 require_cmd git
+require_cmd openssl
 PYTHON=$(detect_python)
 info "Using Python: $PYTHON ($($PYTHON --version 2>&1))"
 
@@ -168,7 +169,8 @@ info "Creating virtual environment"
 
 info "Installing local-git-mcp"
 "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null 2>&1
-"$VENV_DIR/bin/pip" install --force-reinstall "$INSTALL_DIR" >/dev/null 2>&1
+"$VENV_DIR/bin/pip" install --upgrade "$INSTALL_DIR" >/dev/null 2>&1
+"$VENV_DIR/bin/pip" install --force-reinstall --no-deps "$INSTALL_DIR" >/dev/null 2>&1
 
 BIN_PATH="$VENV_DIR/bin/local-git-mcp"
 if [ ! -f "$BIN_PATH" ]; then

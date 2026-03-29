@@ -2,13 +2,13 @@
 
 import argparse
 import glob
+import hmac
 import os
 import secrets
 import subprocess
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
-from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -16,8 +16,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 SENTINEL_FILE = ".git-mcp-allowed"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 44514
-DEFAULT_TOKEN_DIR = os.path.expanduser("~/.local/share/local-git-mcp")
-DEFAULT_TOKEN_FILE = os.path.join(DEFAULT_TOKEN_DIR, "auth-token")
+DEFAULT_INSTALL_DIR = os.environ.get(
+    "LOCAL_GIT_MCP_DIR", os.path.expanduser("~/.local/share/local-git-mcp")
+)
+DEFAULT_TOKEN_FILE = os.path.join(DEFAULT_INSTALL_DIR, "auth-token")
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +40,8 @@ class BearerTokenMiddleware:
             if path not in self.SKIP_PATHS:
                 headers = dict(scope.get("headers", []))
                 auth = headers.get(b"authorization", b"").decode()
-                if auth != f"Bearer {self.token}":
+                expected = f"Bearer {self.token}"
+                if not hmac.compare_digest(auth, expected):
                     response = JSONResponse(
                         {"error": "Unauthorized"}, status_code=401
                     )
@@ -58,8 +61,11 @@ def load_or_create_token(token_file: str) -> str:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     token = secrets.token_hex(32)
-    path.write_text(token + "\n")
-    os.chmod(token_file, 0o600)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, (token + "\n").encode())
+    finally:
+        os.close(fd)
     return token
 
 
@@ -106,6 +112,14 @@ def _run_git(repo_path: str, args: list[str], timeout: int = 30) -> str:
         return f"Error: git command timed out after {timeout}s."
     except FileNotFoundError:
         return "Error: git is not installed or not in PATH."
+
+
+def _reject_flags(*values: str) -> str | None:
+    """Return an error if any value looks like a git flag."""
+    for v in values:
+        if v.startswith("-"):
+            return f"Error: invalid argument '{v}' (must not start with '-')."
+    return None
 
 
 def _clean_lock_files(repo_path: str) -> list[str]:
@@ -163,6 +177,7 @@ def git_log(repo_path: str, n: int = 5) -> str:
     """Returns the last n commits as oneline log."""
     if err := _validate_repo(repo_path):
         return err
+    n = max(1, min(n, 1000))
     return _run_git(repo_path, ["log", "--oneline", f"-{n}"])
 
 
@@ -194,6 +209,8 @@ def git_push(repo_path: str, remote: str = "origin", branch: str | None = None) 
     """
     if err := _validate_repo(repo_path):
         return err
+    if err := _reject_flags(remote, *([] if branch is None else [branch])):
+        return err
     args = ["push", remote]
     if branch:
         args.append(branch)
@@ -208,6 +225,8 @@ def git_pull(repo_path: str, remote: str = "origin", branch: str | None = None) 
     """
     if err := _validate_repo(repo_path):
         return err
+    if err := _reject_flags(remote, *([] if branch is None else [branch])):
+        return err
     args = ["pull", remote]
     if branch:
         args.append(branch)
@@ -219,6 +238,8 @@ def git_create_branch(repo_path: str, branch_name: str, checkout: bool = True) -
     """Creates a new branch, optionally checking it out immediately."""
     if err := _validate_repo(repo_path):
         return err
+    if err := _reject_flags(branch_name):
+        return err
     if checkout:
         return _run_git(repo_path, ["checkout", "-b", branch_name])
     return _run_git(repo_path, ["branch", branch_name])
@@ -228,6 +249,8 @@ def git_create_branch(repo_path: str, branch_name: str, checkout: bool = True) -
 def git_checkout(repo_path: str, branch_name: str) -> str:
     """Checks out an existing branch."""
     if err := _validate_repo(repo_path):
+        return err
+    if err := _reject_flags(branch_name):
         return err
     return _run_git(repo_path, ["checkout", branch_name])
 
