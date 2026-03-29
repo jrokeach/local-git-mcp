@@ -5,7 +5,9 @@ import glob
 import hmac
 import os
 import secrets
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +16,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 SENTINEL_FILE = ".git-mcp-allowed"
+LOCK_FILES = ("index.lock", "HEAD.lock", "packed-refs.lock")
+STALE_LOCK_AGE_SECONDS = 300
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 44514
 DEFAULT_INSTALL_DIR = os.environ.get(
@@ -122,17 +126,61 @@ def _reject_flags(*values: str) -> str | None:
     return None
 
 
-def _clean_lock_files(repo_path: str) -> list[str]:
-    """Remove stale .lock files from the .git directory. Returns list of removed files."""
-    git_dir = os.path.join(repo_path, ".git")
-    removed = []
-    for lock_file in glob.glob(os.path.join(git_dir, "*.lock")):
+def _lock_is_in_use(lock_path: Path) -> bool:
+    """Best-effort check for whether a lock file is still held by a running process."""
+    lsof_path = shutil.which("lsof")
+    if lsof_path is None:
+        return True
+
+    try:
+        result = subprocess.run(
+            [lsof_path, str(lock_path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True
+
+    return result.returncode == 0
+
+
+def _cleanup_stale_lock_files(repo_path: str) -> str | None:
+    """Remove known stale git lock files, but never delete locks that may be active."""
+    git_dir = Path(repo_path) / ".git"
+
+    for lock_name in LOCK_FILES:
+        lock_path = git_dir / lock_name
+        if not lock_path.exists():
+            continue
+
         try:
-            os.remove(lock_file)
-            removed.append(lock_file)
-        except OSError:
-            pass
-    return removed
+            age_seconds = time.time() - lock_path.stat().st_mtime
+        except OSError as exc:
+            return f"Error: unable to inspect git lock file '{lock_path}': {exc}"
+
+        if age_seconds < STALE_LOCK_AGE_SECONDS:
+            return (
+                f"Error: git lock file '{lock_path}' looks active "
+                f"(updated {int(age_seconds)}s ago)."
+            )
+
+        if _lock_is_in_use(lock_path):
+            return f"Error: git lock file '{lock_path}' is still in use."
+
+        try:
+            lock_path.unlink()
+        except OSError as exc:
+            return f"Error: unable to remove stale git lock file '{lock_path}': {exc}"
+
+    for lock_path in glob.glob(os.path.join(repo_path, ".git", "*.lock")):
+        if os.path.basename(lock_path) not in LOCK_FILES:
+            return (
+                f"Error: unsupported git lock file present '{lock_path}'. "
+                "Refusing to remove unknown lock files automatically."
+            )
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -153,23 +201,21 @@ def git_status(repo_path: str) -> str:
 def git_commit(repo_path: str, message: str, stage_all: bool = True) -> str:
     """Commit changes in the repository.
 
-    Cleans up stale .lock files before and after the operation.
+    Cleans up known stale .lock files before the operation.
     If stage_all is true, runs `git add -A` first.
     """
     if err := _validate_repo(repo_path):
         return err
 
-    _clean_lock_files(repo_path)
+    if err := _cleanup_stale_lock_files(repo_path):
+        return err
 
     if stage_all:
         add_result = _run_git(repo_path, ["add", "-A"])
         if add_result.startswith("Error"):
-            _clean_lock_files(repo_path)
             return f"Failed to stage files: {add_result}"
 
-    result = _run_git(repo_path, ["commit", "-m", message])
-    _clean_lock_files(repo_path)
-    return result
+    return _run_git(repo_path, ["commit", "-m", message])
 
 
 @mcp.tool()
