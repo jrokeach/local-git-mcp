@@ -6,12 +6,14 @@ set -euo pipefail
 #   or:  curl -fsSL ... | bash -s -- --no-service
 #
 # Flags:
-#   --no-service   Install the package only; do not register a system service
+#   --no-service   Install and generate token, but skip service registration
 
 REPO_URL="https://github.com/jrokeach/local-git-mcp.git"
 INSTALL_DIR="${LOCAL_GIT_MCP_DIR:-$HOME/.local/share/local-git-mcp}"
 VENV_DIR="$INSTALL_DIR/.venv"
+TOKEN_FILE="$INSTALL_DIR/auth-token"
 SERVICE_LABEL="com.local-git-mcp"
+DEFAULT_PORT=44514
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -63,7 +65,6 @@ install_macos_service() {
 
   mkdir -p "$plist_dir"
 
-  # Unload existing service if present
   if launchctl list "$SERVICE_LABEL" >/dev/null 2>&1; then
     info "Stopping existing LaunchAgent"
     launchctl bootout "gui/$(id -u)/$SERVICE_LABEL" 2>/dev/null || true
@@ -80,6 +81,8 @@ install_macos_service() {
     <key>ProgramArguments</key>
     <array>
         <string>$bin_path</string>
+        <string>--token-file</string>
+        <string>$TOKEN_FILE</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -112,7 +115,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=$bin_path
+ExecStart=$bin_path --token-file $TOKEN_FILE
 Restart=on-failure
 RestartSec=5
 
@@ -169,6 +172,21 @@ fi
 info "Installed: $BIN_PATH"
 
 # ---------------------------------------------------------------------------
+# Generate auth token
+# ---------------------------------------------------------------------------
+if [ -f "$TOKEN_FILE" ]; then
+  info "Auth token already exists at $TOKEN_FILE"
+else
+  info "Generating auth token"
+  mkdir -p "$(dirname "$TOKEN_FILE")"
+  openssl rand -hex 32 > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+  info "Auth token written to $TOKEN_FILE (mode 0600)"
+fi
+
+TOKEN=$(cat "$TOKEN_FILE")
+
+# ---------------------------------------------------------------------------
 # Service installation
 # ---------------------------------------------------------------------------
 if [ "$INSTALL_SERVICE" = true ]; then
@@ -178,6 +196,9 @@ if [ "$INSTALL_SERVICE" = true ]; then
   esac
 else
   info "Skipping service installation (--no-service)"
+  echo ""
+  echo "  To run manually:"
+  echo "    $BIN_PATH"
 fi
 
 # ---------------------------------------------------------------------------
@@ -186,16 +207,28 @@ fi
 echo ""
 info "Installation complete!"
 echo ""
-echo "  Binary:  $BIN_PATH"
+echo "  Binary:     $BIN_PATH"
+echo "  Auth token: $TOKEN_FILE"
 if [ "$INSTALL_SERVICE" = true ]; then
   case "$PLATFORM" in
-    macos) echo "  Service: macOS LaunchAgent ($SERVICE_LABEL)" ;;
-    linux) echo "  Service: systemd user unit (local-git-mcp.service)" ;;
+    macos) echo "  Service:    macOS LaunchAgent ($SERVICE_LABEL)" ;;
+    linux) echo "  Service:    systemd user unit (local-git-mcp.service)" ;;
   esac
 fi
 echo ""
-echo "  To use with an MCP client, add this to your config:"
+echo "  Add this to your MCP client config (e.g. ~/.claude/mcp_settings.json):"
 echo ""
-echo "    {\"mcpServers\": {\"local-git-mcp\": {\"command\": \"$BIN_PATH\", \"args\": [], \"type\": \"stdio\"}}}"
+cat <<MCPCONFIG
+    {
+      "mcpServers": {
+        "local-git-mcp": {
+          "url": "http://127.0.0.1:$DEFAULT_PORT/mcp",
+          "headers": {
+            "Authorization": "Bearer $TOKEN"
+          }
+        }
+      }
+    }
+MCPCONFIG
 echo ""
 echo "  Remember to create a .git-mcp-allowed file in each repo you want to manage."

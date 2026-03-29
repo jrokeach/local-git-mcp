@@ -14,20 +14,11 @@ info()  { printf '\033[1;34m==> %s\033[0m\n' "$1"; }
 warn()  { printf '\033[1;33m==> %s\033[0m\n' "$1"; }
 
 # ---------------------------------------------------------------------------
-# Detect OS
+# Remove system service
 # ---------------------------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
-  Darwin) PLATFORM=macos ;;
-  Linux)  PLATFORM=linux ;;
-  *)      PLATFORM=unknown ;;
-esac
-
-# ---------------------------------------------------------------------------
-# Remove system service
-# ---------------------------------------------------------------------------
-case "$PLATFORM" in
-  macos)
+  Darwin)
     PLIST_PATH="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
     if [ -f "$PLIST_PATH" ]; then
       info "Stopping and removing macOS LaunchAgent"
@@ -38,7 +29,7 @@ case "$PLATFORM" in
       info "No LaunchAgent found; skipping"
     fi
     ;;
-  linux)
+  Linux)
     UNIT_PATH="$HOME/.config/systemd/user/local-git-mcp.service"
     if [ -f "$UNIT_PATH" ]; then
       info "Stopping and removing systemd user service"
@@ -56,12 +47,12 @@ case "$PLATFORM" in
 esac
 
 # ---------------------------------------------------------------------------
-# Remove installation directory
+# Remove installation directory (includes auth token)
 # ---------------------------------------------------------------------------
 if [ -d "$INSTALL_DIR" ]; then
   info "Removing installation directory: $INSTALL_DIR"
   rm -rf "$INSTALL_DIR"
-  info "Installation directory removed"
+  info "Installation directory removed (including auth token)"
 else
   info "Installation directory not found ($INSTALL_DIR); skipping"
 fi

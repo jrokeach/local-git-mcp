@@ -1,12 +1,24 @@
 # local-git-mcp
 
-A lightweight MCP server that handles git operations on behalf of AI coding assistants. Runs locally as a stdio subprocess — no network ports, no external exposure.
+A lightweight MCP server that handles git operations on behalf of AI coding assistants. Runs as a local HTTP service — no external network exposure by default.
 
 ## Why?
 
 When AI assistants run inside sandboxed environments with filesystem mounts (e.g. FUSE/bindfs), git lock files (`HEAD.lock`, `index.lock`, etc.) created during commits cannot be cleaned up by the sandbox process due to permission restrictions. This blocks subsequent git operations.
 
-Running git operations through a local MCP server — which executes with full host OS permissions — eliminates this problem entirely.
+A sandboxed agent can't fix this by spawning a helper process — child processes inherit the sandbox. The solution is a persistent service running **outside** the sandbox that the agent connects to over HTTP.
+
+## How It Works
+
+The server runs as a per-user service (macOS LaunchAgent or Linux systemd user unit) outside any sandbox, with full access to your git credentials and filesystem. Your AI agent connects to it over HTTP on `127.0.0.1`.
+
+```
+Sandboxed agent ──HTTP──► local-git-mcp service (runs as your user)
+                                  ▼
+                                 git (full host permissions)
+```
+
+An auth token (stored in a file with mode 0600) ensures only your user account can use the service. See [Security Model](#security-model) for details.
 
 ## Tools
 
@@ -25,18 +37,8 @@ Running git operations through a local MCP server — which executes with full h
 
 ## Installation
 
-### Quick install (recommended)
-
-The install script clones the repo, creates an isolated virtual environment, and registers a system service by default:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install.sh | bash
-```
-
-To install **without** registering a system service:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install.sh | bash -s -- --no-service
 ```
 
 **What the installer does:**
@@ -44,11 +46,18 @@ curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install
 1. Finds a Python 3.11+ interpreter on your system
 2. Clones this repo to `~/.local/share/local-git-mcp` (override with `LOCAL_GIT_MCP_DIR`)
 3. Creates a virtual environment and installs the package
-4. Unless `--no-service` is passed:
-   - **macOS**: Installs a LaunchAgent (`com.local-git-mcp`) that starts at login
-   - **Linux**: Installs a systemd user service (`local-git-mcp.service`) that starts at login
+4. Generates an auth token at `~/.local/share/local-git-mcp/auth-token` (mode 0600)
+5. Registers and starts a per-user service:
+   - **macOS**: LaunchAgent (`com.local-git-mcp`)
+   - **Linux**: systemd user unit (`local-git-mcp.service`)
 
-The installer prints the full binary path and a ready-to-paste MCP client config snippet when finished.
+The installer prints a ready-to-paste MCP client config snippet (with your auth token) when finished.
+
+To install **without** registering a service (e.g. to run manually):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install.sh | bash -s -- --no-service
+```
 
 ### Manual install
 
@@ -56,6 +65,7 @@ The installer prints the full binary path and a ready-to-paste MCP client config
 git clone https://github.com/jrokeach/local-git-mcp.git
 cd local-git-mcp
 pip install .        # or: uv pip install .
+local-git-mcp       # starts on 127.0.0.1:44514
 ```
 
 ## Uninstallation
@@ -66,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/uninsta
 
 This will:
 1. Stop and remove the system service (LaunchAgent on macOS, systemd unit on Linux)
-2. Delete the installation directory (`~/.local/share/local-git-mcp`)
+2. Delete the installation directory including the auth token
 
 The uninstaller does **not** remove `.git-mcp-allowed` sentinel files from your repositories or MCP client config entries — those must be cleaned up manually.
 
@@ -75,6 +85,25 @@ If you used a custom install path, set the same environment variable:
 ```bash
 curl -fsSL ... | LOCAL_GIT_MCP_DIR=/your/custom/path bash
 ```
+
+## MCP Client Configuration
+
+Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "local-git-mcp": {
+      "url": "http://127.0.0.1:44514/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN_HERE"
+      }
+    }
+  }
+}
+```
+
+Replace `YOUR_TOKEN_HERE` with the contents of `~/.local/share/local-git-mcp/auth-token`. The install script prints the complete config snippet with your token filled in.
 
 ## Per-Repository Access Control
 
@@ -91,85 +120,61 @@ git commit -m "Allow local-git-mcp operations"
 
 The file may be empty or contain optional freeform notes. If the file is not present, all operations against that repository will be rejected with a clear error message.
 
-**Security rationale:** Without this, any process that can reach the MCP server could request git operations on any directory on the filesystem. The sentinel file ensures that access must be granted intentionally, at the repo level, by someone with write access to that repo.
-
-## MCP Client Configuration
-
-### Claude Code
-
-Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "local-git-mcp": {
-      "command": "local-git-mcp",
-      "args": [],
-      "type": "stdio"
-    }
-  }
-}
-```
-
-If the command isn't on your PATH (e.g. you used the installer), use the full path printed at the end of installation:
-
-```json
-{
-  "mcpServers": {
-    "local-git-mcp": {
-      "command": "/path/to/your/.local/share/local-git-mcp/.venv/bin/local-git-mcp",
-      "args": [],
-      "type": "stdio"
-    }
-  }
-}
-```
-
-### Other MCP Clients
-
-Any MCP client that supports stdio transport can use this server. Point it at the `local-git-mcp` command (or the full path to the installed script) with stdio transport.
+**Security rationale:** Without this, any process that can authenticate to the server could request git operations on any directory the user has access to. The sentinel file ensures that access must be granted intentionally, at the repo level, by someone with write access to that repo.
 
 ## Credentials and Authentication
 
-The server **runs as the user who starts it** — whether that's you running it directly, an MCP client spawning it, or a system service started at login. It has no elevated privileges and no credential store of its own.
+### How the service authenticates git operations
 
-Every `git` command the server executes inherits that user's environment, which means it uses:
+The service runs as **your user account** (via LaunchAgent or systemd user unit). It is not a system-wide daemon and does not run as root. Because it runs as you, it inherits your full environment:
 
-- **SSH keys** from `~/.ssh/` (for `git@` remotes)
-- **Git credential helpers** configured in `~/.gitconfig` or `/etc/gitconfig` — e.g. `osxkeychain` on macOS, `libsecret` or `credential-cache` on Linux
-- **macOS Keychain** entries (if the user's credential helper is `osxkeychain`)
-- **Environment variables** like `GIT_SSH_COMMAND`, `GIT_ASKPASS`, or `SSH_AUTH_SOCK`
-- **Git config** from `~/.gitconfig` (user-level) and any repo-level `.git/config`
+- **SSH keys** from `~/.ssh/`
+- **Git credential helpers** from `~/.gitconfig` (e.g. `osxkeychain` on macOS, `libsecret` on Linux)
+- **macOS Keychain** entries
+- **Environment variables** like `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`
+- **Git config** from `~/.gitconfig` and repo-level `.git/config`
+
+No credentials are stored, managed, or proxied by the server. If `git push` or `git pull` encounters an authentication error, the error is returned as-is from git. Because the server runs non-interactively, credential prompts that require terminal input will fail cleanly rather than hanging.
+
+### How the service authenticates clients (auth token)
+
+Every request to the server must include a Bearer token in the `Authorization` header. The token is a random 64-character hex string stored at `~/.local/share/local-git-mcp/auth-token` with file mode `0600` (owner-read-only).
+
+**Why a token is necessary:** The server listens on a TCP port. TCP ports are not scoped to a user — any process running on the machine can connect to any port on `127.0.0.1`. Without a token, any local user or process could send requests to your service and execute git operations using your credentials. The token ensures that only processes that can read your token file (i.e. processes running as your user or as root) can authenticate.
 
 ### On multi-user machines
 
-Each user must install and run their own instance. There is no shared daemon or system-wide service. **An AI agent running as user B cannot reach or use a server instance started by user A** — this is enforced by how stdio transport works and how the OS isolates per-user services.
+Each user runs their own service instance. The auth token file (`0600`) ensures that user B cannot authenticate to user A's service, even though TCP port access is not user-scoped. If multiple users install the service, each should use a different port (configure via `--port` or `LOCAL_GIT_MCP_PORT`).
 
-Here's why: this server uses **stdio transport**, not a network socket. There is no port, no Unix socket, and no IPC endpoint that other users could connect to. The MCP client (e.g. Claude Code) launches the server as a child process and communicates over the child's stdin/stdout pipe. That pipe is private to the parent process — no other user or process on the machine can attach to it.
+The `/health` endpoint is the only unauthenticated endpoint, intentionally, so monitoring tools can check service liveness without a token.
 
-The system services reinforce this:
+## Configuration
 
-- **macOS LaunchAgent** (`~/Library/LaunchAgents/`): Runs in your login session with your UID, your home directory, and your keychain. launchd scopes it to your user session — other users cannot see, interact with, or send input to your agent.
-- **Linux systemd user unit** (`~/.config/systemd/user/`): Runs in your user session under your UID. systemd user instances are entirely separate per user — other users have their own instance and cannot access yours.
+The server accepts configuration via CLI args or environment variables:
 
-In both cases, the server process can only access repositories that the installing user has filesystem permissions to read/write. Combined with the `.git-mcp-allowed` sentinel requirement, this means:
+| Setting | CLI arg | Env var | Default |
+|---------|---------|---------|---------|
+| Bind address | `--host` | `LOCAL_GIT_MCP_HOST` | `127.0.0.1` |
+| Port | `--port` | `LOCAL_GIT_MCP_PORT` | `44514` |
+| Token file | `--token-file` | `LOCAL_GIT_MCP_TOKEN_FILE` | `~/.local/share/local-git-mcp/auth-token` |
 
-1. Only the installing user's MCP client can talk to their server instance (stdio pipe isolation)
-2. The server only operates on repos that user has filesystem access to
-3. Among those, it only operates on repos that have explicitly opted in via sentinel file
-4. Git operations authenticate using that user's existing credential setup — SSH keys, Keychain, credential helpers, etc.
+To listen on all interfaces (e.g. for remote access from another machine):
 
-**No credentials are stored, managed, or proxied by the server.** If `git push` or `git pull` encounters an authentication error, the error is returned as-is from git. The server sets `GIT_TERMINAL_PROMPT=0` implicitly (via non-interactive subprocess execution), so credential prompts that require a TTY will fail with a clear error rather than hanging.
+```bash
+local-git-mcp --host 0.0.0.0
+```
+
+When exposing to other machines, ensure the token is shared securely with authorized clients.
 
 ## Security Model
 
-- **Sentinel file required**: Every repository must contain a `.git-mcp-allowed` file before the server will execute any git commands against it. This is the sole access control mechanism — the server is stateless and config-free.
+- **Auth token required**: Every request (except `/health`) must include a valid Bearer token. The token file is created with mode `0600`, ensuring only the owning user can read it.
+- **Sentinel file required**: Every repository must contain a `.git-mcp-allowed` file before the server will execute any git commands against it.
 - **Repository validation**: The server verifies that `repo_path` points to a real git repository (contains a `.git` directory) before executing any command.
-- **No network exposure**: stdio transport only — the server is never bound to a port.
-- **No hardcoded paths**: All repository paths are passed as parameters at call time.
-- **Lock file cleanup**: `git_commit` automatically cleans up stale `.lock` files in `.git/` before and after operations, solving the sandbox permission issue.
+- **Localhost by default**: Binds to `127.0.0.1`, not accessible from the network. Configurable for intentional remote access.
+- **Per-user isolation**: Each user runs their own service with their own token and credentials. No shared state between users.
+- **Lock file cleanup**: `git_commit` automatically cleans up stale `.lock` files in `.git/` before and after operations.
 - **No credentials stored**: The server delegates all authentication to the host OS's existing git credential configuration.
-- **Per-user isolation**: Each user runs their own instance with their own credentials. No shared state between users.
 
 ## License
 
