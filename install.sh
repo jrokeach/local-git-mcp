@@ -107,8 +107,14 @@ install_linux_service() {
   local bin_path="$1"
   local systemd_dir="$HOME/.config/systemd/user"
   local unit_path="$systemd_dir/local-git-mcp.service"
+  local escaped_bin_path
+  local escaped_token_file
 
   mkdir -p "$systemd_dir"
+  require_cmd systemd-escape
+
+  escaped_bin_path=$(systemd-escape --quote -- "$bin_path")
+  escaped_token_file=$(systemd-escape --quote -- "$TOKEN_FILE")
 
   info "Installing systemd user service"
   cat > "$unit_path" <<UNIT
@@ -118,7 +124,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=$bin_path --token-file $TOKEN_FILE
+ExecStart=$escaped_bin_path --token-file $escaped_token_file
 Restart=on-failure
 RestartSec=5
 

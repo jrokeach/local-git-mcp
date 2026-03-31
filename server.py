@@ -5,6 +5,7 @@ import glob
 import hmac
 import os
 import secrets
+import stat
 import shutil
 import subprocess
 import time
@@ -61,7 +62,28 @@ def load_or_create_token(token_file: str) -> str:
     """Load an existing auth token or generate a new one."""
     path = Path(token_file)
     if path.exists():
-        return path.read_text().strip()
+        if path.is_symlink():
+            raise RuntimeError(
+                f"Refusing to use symlinked token file: {path}"
+            )
+
+        file_stat = path.stat()
+        expected_mode = stat.S_IRUSR | stat.S_IWUSR
+        actual_mode = stat.S_IMODE(file_stat.st_mode)
+        if actual_mode != expected_mode:
+            raise RuntimeError(
+                f"Refusing to use token file with insecure mode {oct(actual_mode)}: {path}"
+            )
+
+        if file_stat.st_uid != os.getuid():
+            raise RuntimeError(
+                f"Refusing to use token file not owned by the current user: {path}"
+            )
+
+        token = path.read_text().strip()
+        if not token:
+            raise RuntimeError(f"Token file is empty: {path}")
+        return token
 
     path.parent.mkdir(parents=True, exist_ok=True)
     token = secrets.token_hex(32)
