@@ -95,6 +95,7 @@ Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.
 {
   "mcpServers": {
     "local-git-mcp": {
+      "type": "http",
       "url": "http://127.0.0.1:44514/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_TOKEN_HERE"

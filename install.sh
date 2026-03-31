@@ -238,6 +238,7 @@ cat <<MCPCONFIG
     {
       "mcpServers": {
         "local-git-mcp": {
+          "type": "http",
           "url": "http://127.0.0.1:$DEFAULT_PORT/mcp",
           "headers": {
             "Authorization": "Bearer $TOKEN"
