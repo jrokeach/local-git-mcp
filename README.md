@@ -121,9 +121,15 @@ Or add it manually to `~/.claude.json`:
 
 ### Claude Desktop
 
-Claude Desktop does not support custom HTTP headers directly. Use [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a proxy to pass the Bearer token.
+Claude Desktop does not support custom HTTP headers directly. Use [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a proxy to pass the Bearer token. This requires Node.js/npm to be installed; `npx` will download `mcp-remote` automatically on first use.
 
-Add to your `claude_desktop_config.json` (Settings → Developer → Edit Config):
+Open your config file at:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+(Or via the app: Settings → Developer → Edit Config.)
+
+Add to the `mcpServers` object:
 
 ```json
 {
@@ -140,8 +146,6 @@ Add to your `claude_desktop_config.json` (Settings → Developer → Edit Config
   }
 }
 ```
-
-This requires Node.js/npm to be installed. `npx` will download `mcp-remote` automatically on first use.
 
 ## Per-Repository Access Control
 
