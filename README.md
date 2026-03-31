@@ -89,7 +89,11 @@ curl -fsSL ... | LOCAL_GIT_MCP_DIR=/your/custom/path bash
 
 ## MCP Client Configuration
 
-Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.mcp.json`):
+Replace `YOUR_TOKEN_HERE` below with the contents of `~/.local/share/local-git-mcp/auth-token`. The install script prints the complete config snippet with your token filled in, using the default port `44514`.
+
+### Claude Code (CLI / IDE extensions)
+
+Add to `~/.claude/mcp_settings.json` or project-level `.mcp.json`:
 
 ```json
 {
@@ -105,7 +109,29 @@ Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.
 }
 ```
 
-Replace `YOUR_TOKEN_HERE` with the contents of `~/.local/share/local-git-mcp/auth-token`. The install script prints the complete config snippet with your token filled in, using the default port `44514`.
+### Claude Desktop
+
+Claude Desktop does not support custom HTTP headers directly. Use [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a proxy to pass the Bearer token.
+
+Add to your `claude_desktop_config.json` (Settings → Developer → Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "local-git-mcp": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "http://127.0.0.1:44514/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_TOKEN_HERE"
+      ]
+    }
+  }
+}
+```
+
+This requires Node.js/npm to be installed. `npx` will download `mcp-remote` automatically on first use.
 
 ## Per-Repository Access Control
 
