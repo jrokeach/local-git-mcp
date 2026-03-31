@@ -49,7 +49,7 @@ detect_python() {
       local major minor
       major=${ver%%.*}
       minor=${ver#*.}
-      if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
+      if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 11 ]; }; then
         echo "$candidate"
         return
       fi
@@ -89,9 +89,9 @@ install_macos_service() {
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/local-git-mcp.stdout.log</string>
+    <string>$INSTALL_DIR/stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/local-git-mcp.stderr.log</string>
+    <string>$INSTALL_DIR/stderr.log</string>
 </dict>
 </plist>
 PLIST
@@ -194,8 +194,8 @@ if [ -f "$TOKEN_FILE" ]; then
 else
   info "Generating auth token"
   mkdir -p "$(dirname "$TOKEN_FILE")"
-  openssl rand -hex 32 > "$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
+  # Create file with 0600 from the start — never world-readable, even briefly.
+  (umask 077 && openssl rand -hex 32 > "$TOKEN_FILE")
   info "Auth token written to $TOKEN_FILE (mode 0600)"
 fi
 

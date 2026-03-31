@@ -92,6 +92,14 @@ class LoadOrCreateTokenTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "symlinked token file"):
                 server.load_or_create_token(str(token_path))
 
+    def test_rejects_broken_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token_path = Path(tmpdir) / "auth-token"
+            token_path.symlink_to(Path(tmpdir) / "nonexistent")
+
+            with self.assertRaisesRegex(RuntimeError, "symlinked token file"):
+                server.load_or_create_token(str(token_path))
+
     def test_rejects_insecure_permissions_on_existing_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             token_path = Path(tmpdir) / "auth-token"
@@ -154,7 +162,8 @@ class CleanupStaleLockFilesTests(unittest.TestCase):
             self.assertIn("looks active", result)
             self.assertTrue(lock_path.exists())
 
-    def test_rejects_unknown_lock_file(self) -> None:
+    def test_warns_about_unknown_lock_file(self) -> None:
+        """Unknown lock files are logged as warnings but don't block the operation."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = self._make_repo(Path(tmpdir))
             lock_path = repo_path / ".git" / "custom.lock"
@@ -163,9 +172,14 @@ class CleanupStaleLockFilesTests(unittest.TestCase):
             os.utime(lock_path, (stale_time, stale_time))
 
             with mock.patch.object(server, "_resolve_git_dir", return_value=(repo_path / ".git").resolve()):
-                result = server._cleanup_stale_lock_files(str(repo_path))
+                with mock.patch.object(server, "logger") as mock_logger:
+                    result = server._cleanup_stale_lock_files(str(repo_path))
 
-            self.assertIn("unsupported git lock file", result)
+            # No error — unknown locks don't block the commit.
+            self.assertIsNone(result)
+            # But a warning was logged.
+            mock_logger.warning.assert_called_once()
+            self.assertIn("custom.lock", mock_logger.warning.call_args[0][1])
 
 
 class ValidateRepoTests(unittest.TestCase):
@@ -173,6 +187,7 @@ class ValidateRepoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir) / "repo"
             repo_path.mkdir()
+            (repo_path / ".git").mkdir()
             (repo_path / server.SENTINEL_FILE).write_text("")
 
             with mock.patch.object(
@@ -187,9 +202,12 @@ class ValidateRepoTests(unittest.TestCase):
             repo_path = Path(tmpdir) / "repo"
             subdir_path = repo_path / "subdir"
             subdir_path.mkdir(parents=True)
+            # _validate_repo now does a passive .git check before calling
+            # _resolve_git_toplevel, so the subdir needs a .git marker.
+            (subdir_path / ".git").mkdir()
             (subdir_path / server.SENTINEL_FILE).write_text("")
 
-            with mock.patch.object(server, "_resolve_git_toplevel", return_value=repo_path):
+            with mock.patch.object(server, "_resolve_git_toplevel", return_value=repo_path.resolve()):
                 result = server._validate_repo(str(subdir_path))
 
             self.assertIn("is not the repository root", result)

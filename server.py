@@ -3,6 +3,7 @@
 import argparse
 import glob
 import hmac
+import logging
 import os
 import secrets
 import stat
@@ -15,6 +16,8 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+logger = logging.getLogger("local-git-mcp")
 
 SENTINEL_FILE = ".git-mcp-allowed"
 LOCK_FILES = ("index.lock", "HEAD.lock", "packed-refs.lock")
@@ -40,17 +43,21 @@ class BearerTokenMiddleware:
         self.token = token
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
+        if scope["type"] != "lifespan":
             path = scope.get("path", "")
             if path not in self.SKIP_PATHS:
                 headers = dict(scope.get("headers", []))
-                auth = headers.get(b"authorization", b"").decode()
+                auth = headers.get(b"authorization", b"").decode("utf-8", errors="replace")
                 expected = f"Bearer {self.token}"
                 if not hmac.compare_digest(auth, expected):
-                    response = JSONResponse(
-                        {"error": "Unauthorized"}, status_code=401
-                    )
-                    await response(scope, receive, send)
+                    if scope["type"] == "websocket":
+                        await receive()  # consume websocket.connect
+                        await send({"type": "websocket.close", "code": 4401})
+                    else:
+                        response = JSONResponse(
+                            {"error": "Unauthorized"}, status_code=401
+                        )
+                        await response(scope, receive, send)
                     return
         await self.app(scope, receive, send)
 
@@ -61,13 +68,20 @@ class BearerTokenMiddleware:
 def load_or_create_token(token_file: str) -> str:
     """Load an existing auth token or generate a new one."""
     path = Path(token_file)
-    if path.exists():
-        if path.is_symlink():
+
+    # Use lstat() for a single atomic check — avoids TOCTOU between
+    # exists() and is_symlink(), and does not follow symlinks.
+    try:
+        file_stat = os.lstat(str(path))
+    except FileNotFoundError:
+        file_stat = None
+
+    if file_stat is not None:
+        if stat.S_ISLNK(file_stat.st_mode):
             raise RuntimeError(
                 f"Refusing to use symlinked token file: {path}"
             )
 
-        file_stat = path.stat()
         expected_mode = stat.S_IRUSR | stat.S_IWUSR
         actual_mode = stat.S_IMODE(file_stat.st_mode)
         if actual_mode != expected_mode:
@@ -80,14 +94,34 @@ def load_or_create_token(token_file: str) -> str:
                 f"Refusing to use token file not owned by the current user: {path}"
             )
 
-        token = path.read_text().strip()
+        # Read via O_NOFOLLOW to close the TOCTOU window between our lstat()
+        # above and this open — prevents a symlink planted between the two calls.
+        try:
+            read_fd = os.open(
+                str(path),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"Unable to open token file (possible symlink race): {path}: {exc}"
+            ) from exc
+        try:
+            token = os.read(read_fd, 4096).decode().strip()
+        finally:
+            os.close(read_fd)
         if not token:
             raise RuntimeError(f"Token file is empty: {path}")
         return token
 
     path.parent.mkdir(parents=True, exist_ok=True)
     token = secrets.token_hex(32)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # O_NOFOLLOW prevents creating through a symlink planted between our
+    # lstat() above and this open().  O_EXCL prevents overwriting.
+    fd = os.open(
+        str(path),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
     try:
         os.write(fd, (token + "\n").encode())
     finally:
@@ -154,6 +188,14 @@ def _validate_repo(repo_path: str) -> str | None:
     if not path.is_dir():
         return f"Error: '{repo_path}' is not a directory."
 
+    # Passive check: reject paths that don't even look like a git repo
+    # before spawning a git subprocess (which could execute hooks in a
+    # malicious .git directory).  A real repo has either a .git directory
+    # or a .git file (for worktrees / submodules).
+    git_marker = path / ".git"
+    if not (git_marker.is_dir() or git_marker.is_file()):
+        return f"Error: '{repo_path}' is not a git repository."
+
     git_toplevel = _resolve_git_toplevel(path)
     if git_toplevel is None:
         return f"Error: '{repo_path}' is not a git repository."
@@ -201,11 +243,20 @@ def _reject_flags(*values: str) -> str | None:
     return None
 
 
-def _lock_is_in_use(lock_path: Path) -> bool:
-    """Best-effort check for whether a lock file is still held by a running process."""
+def _lock_is_in_use(lock_path: Path) -> bool | None:
+    """Best-effort check for whether a lock file is still held by a running process.
+
+    Returns True if in use, False if not in use, or None if the check
+    could not be performed (e.g. lsof is not installed).
+    """
     lsof_path = shutil.which("lsof")
     if lsof_path is None:
-        return True
+        logger.warning(
+            "lsof not found — cannot verify whether '%s' is held by a process. "
+            "Install lsof for safer stale-lock detection.",
+            lock_path,
+        )
+        return None
 
     try:
         result = subprocess.run(
@@ -215,16 +266,23 @@ def _lock_is_in_use(lock_path: Path) -> bool:
             timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return True
+        return None
 
     return result.returncode == 0
 
 
 def _cleanup_stale_lock_files(repo_path: str) -> str | None:
-    """Remove known stale git lock files, but never delete locks that may be active."""
+    """Remove known stale git lock files, but never delete locks that may be active.
+
+    Processes every known lock independently — a problem with one lock does
+    not prevent cleanup of other stale locks.  Returns a combined error
+    string only for locks that could not be cleaned, or None on full success.
+    """
     git_dir = _resolve_git_dir(Path(repo_path))
     if git_dir is None:
         return f"Error: unable to determine git metadata directory for '{repo_path}'."
+
+    errors: list[str] = []
 
     for lock_name in LOCK_FILES:
         lock_path = git_dir / lock_name
@@ -234,29 +292,38 @@ def _cleanup_stale_lock_files(repo_path: str) -> str | None:
         try:
             age_seconds = time.time() - lock_path.stat().st_mtime
         except OSError as exc:
-            return f"Error: unable to inspect git lock file '{lock_path}': {exc}"
+            errors.append(f"unable to inspect '{lock_path}': {exc}")
+            continue
 
         if age_seconds < STALE_LOCK_AGE_SECONDS:
-            return (
-                f"Error: git lock file '{lock_path}' looks active "
-                f"(updated {int(age_seconds)}s ago)."
+            errors.append(
+                f"'{lock_path}' looks active (updated {int(age_seconds)}s ago)"
             )
+            continue
 
-        if _lock_is_in_use(lock_path):
-            return f"Error: git lock file '{lock_path}' is still in use."
+        in_use = _lock_is_in_use(lock_path)
+        if in_use is True:
+            errors.append(f"'{lock_path}' is still in use")
+            continue
+        # in_use is None (lsof unavailable) — the age check already passed,
+        # so we proceed with removal.
 
         try:
             lock_path.unlink()
         except OSError as exc:
-            return f"Error: unable to remove stale git lock file '{lock_path}': {exc}"
+            errors.append(f"unable to remove '{lock_path}': {exc}")
 
-    for lock_path in glob.glob(os.path.join(git_dir, "*.lock")):
-        if os.path.basename(lock_path) not in LOCK_FILES:
-            return (
-                f"Error: unsupported git lock file present '{lock_path}'. "
-                "Refusing to remove unknown lock files automatically."
+    # Warn about unknown lock files but don't block the operation —
+    # they may be unrelated to the commit we're about to perform.
+    for lock_file in glob.glob(str(git_dir / "*.lock")):
+        if os.path.basename(lock_file) not in LOCK_FILES:
+            logger.warning(
+                "Unknown git lock file present: %s (not managed by local-git-mcp)",
+                lock_file,
             )
 
+    if errors:
+        return "Error: " + "; ".join(errors) + "."
     return None
 
 

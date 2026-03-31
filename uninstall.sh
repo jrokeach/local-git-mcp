@@ -47,6 +47,13 @@ case "$OS" in
 esac
 
 # ---------------------------------------------------------------------------
+# Remove stale log files from older installs that used /tmp
+# ---------------------------------------------------------------------------
+for f in /tmp/local-git-mcp.stdout.log /tmp/local-git-mcp.stderr.log; do
+  [ -f "$f" ] && rm -f "$f"
+done
+
+# ---------------------------------------------------------------------------
 # Remove installation directory (includes auth token)
 # ---------------------------------------------------------------------------
 if [ -d "$INSTALL_DIR" ]; then
