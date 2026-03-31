@@ -93,7 +93,15 @@ Replace `YOUR_TOKEN_HERE` below with the contents of `~/.local/share/local-git-m
 
 ### Claude Code (CLI / IDE extensions)
 
-Add to `~/.claude/mcp_settings.json` or project-level `.mcp.json`:
+Because the config contains a per-user auth token, use **user scope** so it applies across all projects without being checked into git. The easiest way is the CLI:
+
+```bash
+claude mcp add local-git-mcp --transport http --scope user \
+  --header "Authorization: Bearer YOUR_TOKEN_HERE" \
+  http://127.0.0.1:44514/mcp
+```
+
+Or add it manually to `~/.claude.json`:
 
 ```json
 {
@@ -108,6 +116,8 @@ Add to `~/.claude/mcp_settings.json` or project-level `.mcp.json`:
   }
 }
 ```
+
+> **Which config file?** Claude Code has four MCP scopes. **User** (`~/.claude.json`) is recommended here because the token is user-specific and the server is useful across all projects. Avoid project-scoped `.mcp.json` since it's checked into git and would expose the token. If you only want the server in a single project, use `--scope local` instead.
 
 ### Claude Desktop
 
