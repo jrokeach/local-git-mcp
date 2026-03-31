@@ -153,6 +153,7 @@ esac
 # ---------------------------------------------------------------------------
 require_cmd git
 require_cmd openssl
+require_cmd lsof
 PYTHON=$(detect_python)
 info "Using Python: $PYTHON ($($PYTHON --version 2>&1))"
 
@@ -230,7 +231,8 @@ if [ "$INSTALL_SERVICE" = true ]; then
   esac
 fi
 echo ""
-echo "  Add this to your MCP client config (e.g. ~/.claude/mcp_settings.json):"
+echo "  Add this to your MCP client config (e.g. ~/.claude/mcp_settings.json)."
+echo "  The URL below uses the default port ($DEFAULT_PORT); adjust it if you run the service on a different port:"
 echo ""
 cat <<MCPCONFIG
     {

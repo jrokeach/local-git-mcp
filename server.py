@@ -98,6 +98,29 @@ def load_or_create_token(token_file: str) -> str:
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
+def _resolve_git_toplevel(repo_path: Path) -> Path | None:
+    """Return the git toplevel for repo_path, or None if git does not recognize it."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    toplevel = result.stdout.strip()
+    if not toplevel:
+        return None
+
+    return Path(toplevel).resolve()
+
+
 def _validate_repo(repo_path: str) -> str | None:
     """Validate that repo_path is a git repo with the sentinel file.
 
@@ -108,8 +131,15 @@ def _validate_repo(repo_path: str) -> str | None:
     if not path.is_dir():
         return f"Error: '{repo_path}' is not a directory."
 
-    if not (path / ".git").is_dir():
-        return f"Error: '{repo_path}' is not a git repository (no .git directory found)."
+    git_toplevel = _resolve_git_toplevel(path)
+    if git_toplevel is None:
+        return f"Error: '{repo_path}' is not a git repository."
+
+    if git_toplevel != path:
+        return (
+            f"Error: '{repo_path}' is inside git repository '{git_toplevel}', "
+            "but is not the repository root."
+        )
 
     if not (path / SENTINEL_FILE).exists():
         return (

@@ -47,11 +47,12 @@ curl -fsSL https://raw.githubusercontent.com/jrokeach/local-git-mcp/main/install
 2. Clones this repo to `~/.local/share/local-git-mcp` (override with `LOCAL_GIT_MCP_DIR`)
 3. Creates a virtual environment and installs the package
 4. Generates an auth token at `~/.local/share/local-git-mcp/auth-token` (mode 0600)
-5. Registers and starts a per-user service:
+5. Checks for required local tools used by the service, including `lsof` for stale lock detection
+6. Registers and starts a per-user service:
    - **macOS**: LaunchAgent (`com.local-git-mcp`)
    - **Linux**: systemd user unit (`local-git-mcp.service`)
 
-The installer prints a ready-to-paste MCP client config snippet (with your auth token) when finished.
+The installer prints a ready-to-paste MCP client config snippet (with your auth token) when finished. The printed URL uses the default port `44514`; if you run the service on another port, update the URL accordingly.
 
 To install **without** registering a service (e.g. to run manually):
 
@@ -103,7 +104,7 @@ Add to your MCP settings (e.g. `~/.claude/mcp_settings.json` or project-level `.
 }
 ```
 
-Replace `YOUR_TOKEN_HERE` with the contents of `~/.local/share/local-git-mcp/auth-token`. The install script prints the complete config snippet with your token filled in.
+Replace `YOUR_TOKEN_HERE` with the contents of `~/.local/share/local-git-mcp/auth-token`. The install script prints the complete config snippet with your token filled in, using the default port `44514`.
 
 ## Per-Repository Access Control
 
@@ -170,10 +171,18 @@ When exposing to other machines, ensure the token is shared securely with author
 
 - **Auth token required**: Every request (except `/health`) must include a valid Bearer token. The token file is created with mode `0600`, ensuring only the owning user can read it.
 - **Sentinel file required**: Every repository must contain a `.git-mcp-allowed` file before the server will execute any git commands against it.
-- **Repository validation**: The server verifies that `repo_path` points to a real git repository (contains a `.git` directory) before executing any command.
+- **Repository validation**: The server verifies that `repo_path` is the actual root of a real git repository by asking Git for the repository toplevel before executing any command.
 - **Localhost by default**: Binds to `127.0.0.1`, not accessible from the network. Configurable for intentional remote access.
 - **Per-user isolation**: Each user runs their own service with their own token and credentials. No shared state between users.
-- **Lock file cleanup**: `git_commit` automatically cleans up stale `.lock` files in `.git/` before and after operations.
+- **Lock file cleanup**: `git_commit` only removes known stale lock files after checking that they are old enough and not still in use.
+
+## Development
+
+Run the minimal regression tests with Python 3.11+:
+
+```bash
+python3.11 -m unittest discover -s tests -p 'test_server.py' -v
+```
 - **No credentials stored**: The server delegates all authentication to the host OS's existing git credential configuration.
 
 ## License
