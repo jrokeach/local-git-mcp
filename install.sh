@@ -231,8 +231,10 @@ if [ "$INSTALL_SERVICE" = true ]; then
   esac
 fi
 echo ""
-echo "  Add this to your MCP client config (e.g. ~/.claude/mcp_settings.json)."
-echo "  The URL below uses the default port ($DEFAULT_PORT); adjust it if you run the service on a different port:"
+echo "  Add one of the configs below to your MCP client."
+echo "  The URL uses the default port ($DEFAULT_PORT); adjust if you changed it."
+echo ""
+echo "  Claude Code (CLI / IDE) — ~/.claude/mcp_settings.json or .mcp.json:"
 echo ""
 cat <<MCPCONFIG
     {
@@ -243,6 +245,24 @@ cat <<MCPCONFIG
           "headers": {
             "Authorization": "Bearer $TOKEN"
           }
+        }
+      }
+    }
+MCPCONFIG
+echo ""
+echo "  Claude Desktop — claude_desktop_config.json (requires Node.js/npx):"
+echo ""
+cat <<MCPCONFIG
+    {
+      "mcpServers": {
+        "local-git-mcp": {
+          "command": "npx",
+          "args": [
+            "mcp-remote",
+            "http://127.0.0.1:$DEFAULT_PORT/mcp",
+            "--header",
+            "Authorization: Bearer $TOKEN"
+          ]
         }
       }
     }
