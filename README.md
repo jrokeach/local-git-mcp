@@ -175,6 +175,7 @@ When exposing to other machines, ensure the token is shared securely with author
 - **Localhost by default**: Binds to `127.0.0.1`, not accessible from the network. Configurable for intentional remote access.
 - **Per-user isolation**: Each user runs their own service with their own token and credentials. No shared state between users.
 - **Lock file cleanup**: `git_commit` only removes known stale lock files after checking that they are old enough and not still in use.
+- **No credentials stored**: The server delegates all authentication to the host OS's existing git credential configuration.
 
 ## Development
 
@@ -183,7 +184,6 @@ Run the minimal regression tests with Python 3.11+:
 ```bash
 python3.11 -m unittest discover -s tests -p 'test_server.py' -v
 ```
-- **No credentials stored**: The server delegates all authentication to the host OS's existing git credential configuration.
 
 ## License
 

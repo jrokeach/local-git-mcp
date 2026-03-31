@@ -121,6 +121,29 @@ def _resolve_git_toplevel(repo_path: Path) -> Path | None:
     return Path(toplevel).resolve()
 
 
+def _resolve_git_dir(repo_path: Path) -> Path | None:
+    """Return the real git dir for repo_path, or None if git does not recognize it."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    git_dir = result.stdout.strip()
+    if not git_dir:
+        return None
+
+    return Path(git_dir).resolve()
+
+
 def _validate_repo(repo_path: str) -> str | None:
     """Validate that repo_path is a git repo with the sentinel file.
 
@@ -199,7 +222,9 @@ def _lock_is_in_use(lock_path: Path) -> bool:
 
 def _cleanup_stale_lock_files(repo_path: str) -> str | None:
     """Remove known stale git lock files, but never delete locks that may be active."""
-    git_dir = Path(repo_path) / ".git"
+    git_dir = _resolve_git_dir(Path(repo_path))
+    if git_dir is None:
+        return f"Error: unable to determine git metadata directory for '{repo_path}'."
 
     for lock_name in LOCK_FILES:
         lock_path = git_dir / lock_name
@@ -225,7 +250,7 @@ def _cleanup_stale_lock_files(repo_path: str) -> str | None:
         except OSError as exc:
             return f"Error: unable to remove stale git lock file '{lock_path}': {exc}"
 
-    for lock_path in glob.glob(os.path.join(repo_path, ".git", "*.lock")):
+    for lock_path in glob.glob(os.path.join(git_dir, "*.lock")):
         if os.path.basename(lock_path) not in LOCK_FILES:
             return (
                 f"Error: unsupported git lock file present '{lock_path}'. "

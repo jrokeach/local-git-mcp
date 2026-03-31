@@ -117,8 +117,27 @@ class CleanupStaleLockFilesTests(unittest.TestCase):
             stale_time = time.time() - (server.STALE_LOCK_AGE_SECONDS + 10)
             os.utime(lock_path, (stale_time, stale_time))
 
-            with mock.patch.object(server, "_lock_is_in_use", return_value=False):
-                result = server._cleanup_stale_lock_files(str(repo_path))
+            with mock.patch.object(server, "_resolve_git_dir", return_value=(repo_path / ".git").resolve()):
+                with mock.patch.object(server, "_lock_is_in_use", return_value=False):
+                    result = server._cleanup_stale_lock_files(str(repo_path))
+
+            self.assertIsNone(result)
+            self.assertFalse(lock_path.exists())
+
+    def test_uses_resolved_git_dir_for_lock_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir) / "repo"
+            repo_path.mkdir()
+            real_git_dir = Path(tmpdir) / "real-git-dir"
+            real_git_dir.mkdir()
+            lock_path = real_git_dir / "index.lock"
+            lock_path.write_text("")
+            stale_time = time.time() - (server.STALE_LOCK_AGE_SECONDS + 10)
+            os.utime(lock_path, (stale_time, stale_time))
+
+            with mock.patch.object(server, "_resolve_git_dir", return_value=real_git_dir):
+                with mock.patch.object(server, "_lock_is_in_use", return_value=False):
+                    result = server._cleanup_stale_lock_files(str(repo_path))
 
             self.assertIsNone(result)
             self.assertFalse(lock_path.exists())
@@ -129,7 +148,8 @@ class CleanupStaleLockFilesTests(unittest.TestCase):
             lock_path = repo_path / ".git" / "index.lock"
             lock_path.write_text("")
 
-            result = server._cleanup_stale_lock_files(str(repo_path))
+            with mock.patch.object(server, "_resolve_git_dir", return_value=(repo_path / ".git").resolve()):
+                result = server._cleanup_stale_lock_files(str(repo_path))
 
             self.assertIn("looks active", result)
             self.assertTrue(lock_path.exists())
@@ -142,7 +162,8 @@ class CleanupStaleLockFilesTests(unittest.TestCase):
             stale_time = time.time() - (server.STALE_LOCK_AGE_SECONDS + 10)
             os.utime(lock_path, (stale_time, stale_time))
 
-            result = server._cleanup_stale_lock_files(str(repo_path))
+            with mock.patch.object(server, "_resolve_git_dir", return_value=(repo_path / ".git").resolve()):
+                result = server._cleanup_stale_lock_files(str(repo_path))
 
             self.assertIn("unsupported git lock file", result)
 
